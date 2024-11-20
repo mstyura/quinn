@@ -12,6 +12,7 @@ use std::{
 };
 
 use bytes::{Buf, BufMut};
+use rand::{Rng, RngCore};
 use thiserror::Error;
 
 use crate::{
@@ -300,9 +301,7 @@ impl TransportParameters {
         }
         apply_params!(write_params);
 
-        // Add a reserved parameter to keep people on their toes
-        w.write_var(31 * 5 + 27);
-        w.write_var(0);
+        write_random_grease_reserved_parameter(w, &mut rand::thread_rng());
 
         if let Some(ref x) = self.stateless_reset_token {
             w.write_var(0x02);
@@ -476,6 +475,34 @@ fn decode_cid(len: usize, value: &mut Option<ConnectionId>, r: &mut impl Buf) ->
     Ok(())
 }
 
+// Write transport parameter with up to 16 bytes of random payload and ID from reserved values.
+fn write_random_grease_reserved_parameter<W: BufMut, R: RngCore>(w: &mut W, rng: &mut R) {
+    // See: https://datatracker.ietf.org/doc/html/rfc9000#section-22.3
+    // Inspired by quic-go & quiche implementation:
+    // [1] https://github.com/quic-go/quic-go/blob/3e0a67b2476e1819752f04d75968de042b197b56/internal/wire/transport_parameters.go#L338-L344
+    // [2] https://github.com/google/quiche/blob/cb1090b20c40e2f0815107857324e99acf6ec567/quiche/quic/core/crypto/transport_parameters.cc#L843-L860
+
+    let id = {
+        let rand = rng.next_u64();
+        let n = (rand % ((1 << 62) - 27)) / 31;
+        31 * n + 27
+    };
+    debug_assert!(id < (1 << 62));
+    debug_assert!(id % 31 == 27);
+
+    let len = rng.gen_range(0..16);
+
+    let payload = {
+        let mut slice = [0u8; 16];
+        rng.fill_bytes(&mut slice[..len]);
+        slice
+    };
+
+    w.write_var(id);
+    w.write_var(len as u64);
+    w.put_slice(&payload[..len]);
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -505,6 +532,43 @@ mod test {
             TransportParameters::read(Side::Client, &mut buf.as_slice()).unwrap(),
             params
         );
+    }
+
+    #[test]
+    fn write_random_reserved_transport_parameter() {
+        use rand::rngs::mock::StepRng;
+        let mut rngs = [
+            StepRng::new(0, 1),
+            StepRng::new(1, 1),
+            StepRng::new(27, 1),
+            StepRng::new(31, 1),
+            StepRng::new(u32::MAX as u64, 1),
+            StepRng::new(u32::MAX as u64 - 1, 1),
+            StepRng::new(u32::MAX as u64 + 1, 1),
+            StepRng::new(u32::MAX as u64 - 27, 1),
+            StepRng::new(u32::MAX as u64 + 27, 1),
+            StepRng::new(u32::MAX as u64 - 31, 1),
+            StepRng::new(u32::MAX as u64 + 31, 1),
+            StepRng::new(u64::MAX, 1),
+            StepRng::new(u64::MAX - 1, 1),
+            StepRng::new(u64::MAX - 27, 1),
+            StepRng::new(u64::MAX - 31, 1),
+            StepRng::new(1 << 62, 1),
+            StepRng::new((1 << 62) - 1, 1),
+            StepRng::new((1 << 62) + 1, 1),
+            StepRng::new((1 << 62) - 27, 1),
+            StepRng::new((1 << 62) + 27, 1),
+            StepRng::new((1 << 62) - 31, 1),
+            StepRng::new((1 << 62) + 31, 1),
+        ];
+        for rng in &mut rngs {
+            let mut buf = Vec::new();
+            write_random_grease_reserved_parameter(&mut buf, rng);
+            assert_eq!(
+                TransportParameters::read(Side::Client, &mut buf.as_slice()).unwrap(),
+                TransportParameters::default(),
+            );
+        }
     }
 
     #[test]
