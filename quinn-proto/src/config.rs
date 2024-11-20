@@ -63,6 +63,8 @@ pub struct TransportConfig {
     pub(crate) congestion_controller_factory: Arc<dyn congestion::ControllerFactory + Send + Sync>,
 
     pub(crate) enable_segmentation_offload: bool,
+
+    pub(crate) enable_grease_random_transport_parameter: bool,
 }
 
 impl TransportConfig {
@@ -334,6 +336,18 @@ impl TransportConfig {
         self.enable_segmentation_offload = enabled;
         self
     }
+
+    /// Specify if grease random transport parameter need to be included into transport parameters 
+    /// during connection negotiation
+    ///
+    /// Default to `true`
+    ///
+    /// Will cause quinn to include single grease transport parameter
+    /// with ID in form of 37 * N + 21 with random payload.
+    pub fn enable_grease_random_transport_parameter(&mut self, enabled: bool) -> &mut Self {
+        self.enable_grease_random_transport_parameter = enabled;
+        self
+    }
 }
 
 impl Default for TransportConfig {
@@ -374,6 +388,8 @@ impl Default for TransportConfig {
             congestion_controller_factory: Arc::new(congestion::CubicConfig::default()),
 
             enable_segmentation_offload: true,
+
+            enable_grease_random_transport_parameter: true,
         }
     }
 }
@@ -405,6 +421,7 @@ impl fmt::Debug for TransportConfig {
                 deterministic_packet_numbers: _,
             congestion_controller_factory: _,
             enable_segmentation_offload,
+            enable_grease_random_transport_parameter,
         } = self;
         fmt.debug_struct("TransportConfig")
             .field("max_concurrent_bidi_streams", max_concurrent_bidi_streams)
@@ -432,6 +449,10 @@ impl fmt::Debug for TransportConfig {
             .field("datagram_send_buffer_size", datagram_send_buffer_size)
             .field("congestion_controller_factory", &"[ opaque ]")
             .field("enable_segmentation_offload", enable_segmentation_offload)
+            .field(
+                "enable_grease_random_transport_parameter",
+                enable_grease_random_transport_parameter,
+            )
             .finish()
     }
 }

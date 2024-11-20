@@ -100,6 +100,9 @@ macro_rules! make_struct {
             pub(crate) stateless_reset_token: Option<ResetToken>,
             /// The server's preferred address for communication after handshake completion
             pub(crate) preferred_address: Option<PreferredAddress>,
+            /// Indicator if single grease transport parameter will be sent over wire in case of
+            /// client or any number of grease transport parameters received in case of server.
+            pub(crate) grease_parameter_present: bool,
         }
 
         // We deliberately don't implement the `Default` trait, since that would be public, and
@@ -121,6 +124,7 @@ macro_rules! make_struct {
                     retry_src_cid: None,
                     stateless_reset_token: None,
                     preferred_address: None,
+                    grease_parameter_present: false,
                 }
             }
         }
@@ -161,6 +165,7 @@ impl TransportParameters {
             min_ack_delay: Some(
                 VarInt::from_u64(u64::try_from(TIMER_GRANULARITY.as_micros()).unwrap()).unwrap(),
             ),
+            grease_parameter_present: config.enable_grease_random_transport_parameter,
             ..Self::default()
         }
     }
@@ -301,7 +306,9 @@ impl TransportParameters {
         }
         apply_params!(write_params);
 
-        write_random_grease_reserved_parameter(w, &mut rand::thread_rng());
+        if self.grease_parameter_present {
+            write_random_grease_reserved_parameter(w, &mut rand::thread_rng());
+        }
 
         if let Some(ref x) = self.stateless_reset_token {
             w.write_var(0x02);
@@ -422,7 +429,12 @@ impl TransportParameters {
                                     params.$name = value.into();
                                     got.$name = true;
                                 })*
-                                _ => r.advance(len as usize),
+                                id => {
+                                    if id % 31 == 27 {
+                                        params.grease_parameter_present = true;
+                                    }
+                                    r.advance(len as usize)
+                                },
                             }
                         }
                     }
@@ -564,9 +576,11 @@ mod test {
         for rng in &mut rngs {
             let mut buf = Vec::new();
             write_random_grease_reserved_parameter(&mut buf, rng);
+            let mut expected_params = TransportParameters::default();
+            expected_params.grease_parameter_present = true;
             assert_eq!(
                 TransportParameters::read(Side::Client, &mut buf.as_slice()).unwrap(),
-                TransportParameters::default(),
+                expected_params,
             );
         }
     }
